@@ -1,0 +1,326 @@
+/**
+
+   @file HawkbitDdi.cpp
+   @date 06.04.2019
+   @author Sven Ebenfeld
+
+   Copyright (c) 2019 Sven Ebenfeld. All rights reserved.
+   This file is part of the ESP32 Hawkbit Updater Arduino Library.
+
+   This library is free software; you can redistribute it and/or
+   modify it under the terms of the GNU Lesser General Public
+   License as published by the Free Software Foundation; either
+   version 2.1 of the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+*/
+
+#include "HawkbitDdi.h"
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+
+// Allocate JsonBuffer for biggest possible JSON document in DDI API
+// Use arduinojson.org/assistant to compute the capacity.
+const size_t capacity = JSON_ARRAY_SIZE(1) + 3 * JSON_ARRAY_SIZE(2) + JSON_ARRAY_SIZE(3) + JSON_ARRAY_SIZE(5) +
+                        24 * JSON_OBJECT_SIZE(1) + 8 * JSON_OBJECT_SIZE(2) + JSON_OBJECT_SIZE(3) +
+                        15 * JSON_OBJECT_SIZE(4) + JSON_OBJECT_SIZE(5) + 4970;
+static DynamicJsonDocument jsonBuffer(capacity);
+#define HEADERSIZE 1024
+static char headers[HEADERSIZE];
+
+const char *HawkbitDdi::securityTypeString[HB_SEC_MAX] = {
+  [HB_SEC_CLIENTCERTIFICATE] = NULL,
+  [HB_SEC_GATEWAYTOKEN] = "GatewayToken",
+  [HB_SEC_TARGETTOKEN] = "TargetToken",
+  [HB_SEC_NONE] = NULL
+};
+
+const char *HawkbitDdi::executionStatusString[HB_EX_MAX] = {
+  [HB_EX_CANCELED] = "canceled",
+  [HB_EX_REJECTED] = "rejected",
+  [HB_EX_CLOSED] = "closed",
+  [HB_EX_PROCEEDING] = "proceeding",
+  [HB_EX_SCHEDULED] = "scheduled",
+  [HB_EX_RESUMED] = "resumed"
+};
+
+const char *HawkbitDdi::executionResultString[HB_RES_MAX] = {
+  [HB_RES_NONE] = "none",
+  [HB_RES_SUCCESS] = "success",
+  [HB_RES_FAILURE] = "failure"
+};
+
+/* Static definitions for GET requests to use in printf functions */
+const char *HawkbitDdi::_getRequest = "GET %s HTTP/1.1\r\n";
+const char *HawkbitDdi::_getRootController = "GET /%s/controller/v1/%s HTTP/1.1\r\n";
+const char *HawkbitDdi::_putConfigData = "PUT /%s/controller/v1/%s/configData HTTP/1.1\r\n";
+const char *HawkbitDdi::_postDeploymentBaseFeedback = "POST /%s/controller/v1/%s/deploymentBase/%d/feedback HTTP/1.1\r\n";
+
+HawkbitDdi::HawkbitDdi(String serverName, uint16_t serverPort, String tenantId, String controllerId, String securityToken, HB_SECURITY_TYPE securityType) {
+  this->_serverName = serverName;
+  this->_serverPort = serverPort;
+  this->_tenantId = tenantId;
+  this->_controllerId = controllerId;
+  this->_securityToken = securityToken;
+  this->_securityType = securityType;
+}
+
+HawkbitDdi::~HawkbitDdi(void) {
+}
+
+void HawkbitDdi::begin(WiFiClientSecure client) {
+  this->_client = client;
+  this->pollController();
+  this->work();
+}
+
+int HawkbitDdi::work() {
+  int retStatus = -1;
+  if (millis() > this->_nextPoll) {
+    this->pollController();
+    if (strnlen(this->_putConfigDataHref, sizeof(this->_putConfigDataHref)) > 0) {
+      Serial.println("Need to put config data");
+    }
+    if (strnlen(this->_getDeploymentBaseHref, sizeof(this->_getDeploymentBaseHref)) > 0) {
+      Serial.println("Need to get Deployment Base");
+      this->getDeploymentBase();
+    }
+    if (strnlen(this->_getCancelActionHref, sizeof(this->_getCancelActionHref)) > 0) {
+      Serial.println("Need to get Cancel Action Information");
+    }
+  }
+  return retStatus;
+}
+
+char * HawkbitDdi::createHeaders() {
+  return this->createHeaders(this->_serverName.c_str());
+}
+
+char * HawkbitDdi::createHeaders(const char *serverName) {
+  size_t strsize = 0;
+  snprintf(headers, HEADERSIZE, "Host: %s\r\n", serverName);
+  strsize = strnlen(headers, HEADERSIZE);
+  switch (this->_securityType) {
+    case HB_SEC_GATEWAYTOKEN:
+    case HB_SEC_TARGETTOKEN:
+      /* Add Authorization Header */
+      snprintf(headers + strsize, HEADERSIZE - strsize, "Authorization: %s %s\r\n", HawkbitDdi::securityTypeString[this->_securityType], this->_securityToken.c_str());
+      strsize = strnlen(headers, HEADERSIZE);
+      break;
+    default:
+      /* No Authorization Header needed */
+      break;
+  }
+  snprintf(headers + strsize, HEADERSIZE - strsize, "Accept: application/hal+json\r\n");
+  strsize = strnlen(headers, HEADERSIZE);
+  snprintf(headers + strsize, HEADERSIZE - strsize, "Connection: close\r\n");
+  strsize = strnlen(headers, HEADERSIZE);
+  return headers;
+}
+
+void HawkbitDdi::getDeploymentBase() {
+  char tmpServer[64];
+  int tmpPort;
+  char tmpGet[384];
+  Serial.println("Split DeploymentBaseHref");
+  uint8_t partNo = 0;
+  // Read each time pair
+  char* component = strtok(this->_getDeploymentBaseHref, "/");
+  while (component != NULL)
+  {
+    switch (partNo) {
+      case 0:
+      default:
+        // Find the next command in input string
+        component = strtok(NULL, ":");
+        break;
+      case 1:
+        strncpy(tmpServer, &component[1], sizeof(tmpServer));
+        // Find the next command in input string
+        component = strtok(NULL, "/");
+        break;
+      case 2:
+        tmpPort = atoi(component);
+        // Find the next command in input string
+        component = strtok(NULL, "");
+        break;
+      case 3:
+        tmpGet[0] = '/';
+        strncpy(&tmpGet[1], component, sizeof(tmpGet) - 1);
+        // Find the next command in input string
+        component = strtok(NULL, "");
+        break;
+    }
+    partNo++;
+  }
+  this->_getDeploymentBaseHref[0] = '\0';
+  Serial.printf("Server: %s:%d, GET %s\r\n", tmpServer, tmpPort, tmpGet);
+  Serial.println("\nStarting connection to server...");
+  if (!_client.connect(tmpServer, tmpPort))
+    Serial.println("Connection failed!");
+  else {
+    Serial.println("Connected to server!");
+    // Make a HTTP request:
+    _client.printf(HawkbitDdi::_getRequest, tmpGet);
+    _client.print(this->createHeaders(tmpServer));
+    // Close Headers field
+    _client.println();
+
+    while (_client.connected()) {
+      String line = _client.readStringUntil('\n');
+      Serial.println(line);
+      if (line == "\r") {
+        Serial.println("headers received");
+        break;
+      }
+    }
+
+    /*
+         this->_nextPoll = millis() + 30000UL;
+         // if there are incoming bytes available
+         // from the server, read them and print them:
+         while (_client.available()) {
+           char c = _client.read();
+           Serial.write(c);
+         }
+         _client.stop();
+         return;
+    */
+    auto error = deserializeJson(jsonBuffer, _client);
+    if (error) {
+      Serial.print(F("deserializeJson() failed with code "));
+      Serial.println(error.c_str());
+      _client.stop();
+      return;
+    }
+
+    // Extract values
+    Serial.println(F("Response:"));
+    serializeJsonPretty(jsonBuffer, Serial);
+    Serial.println();
+    _client.stop();
+    this->_currentActionId = atoi(jsonBuffer["id"].as<char *>());
+    Serial.printf("Current Action ID: %d", this->_currentActionId);
+  }
+}
+
+void HawkbitDdi::pollController() {
+  char timeString[16];
+  int i = 0;
+  Serial.println("\nStarting connection to server...");
+  if (!_client.connect(this->_serverName.c_str(), this->_serverPort))
+    Serial.println("Connection failed!");
+  else {
+    Serial.println("Connected to server!");
+    // Make a HTTP request:
+    _client.printf(HawkbitDdi::_getRootController, this->_tenantId.c_str(), this->_controllerId.c_str());
+    _client.print(this->createHeaders());
+    // Close Headers field
+    _client.println();
+
+    while (_client.connected()) {
+      String line = _client.readStringUntil('\n');
+      Serial.println(line);
+      if (line == "\r") {
+        Serial.println("headers received");
+        break;
+      }
+    }
+
+    /*
+        this->_nextPoll = millis() + 30000UL;
+        // if there are incoming bytes available
+        // from the server, read them and print them:
+        while (_client.available()) {
+          char c = _client.read();
+          Serial.write(c);
+        }
+        return;
+    */
+    auto error = deserializeJson(jsonBuffer, _client);
+    if (error) {
+      Serial.print(F("deserializeJson() failed with code "));
+      Serial.println(error.c_str());
+      _client.stop();
+      return;
+    }
+
+    // Extract values
+    Serial.println(F("Response:"));
+    serializeJsonPretty(jsonBuffer, Serial);
+    Serial.println();
+    strncpy(timeString, jsonBuffer["config"]["polling"]["sleep"].as<char*>(), sizeof(timeString));
+    //  Serial.println(timeString);
+    this->_pollInterval = HawkbitDdi::convertTime(timeString);
+    Serial.printf("Poll Interval: %d\r\n", this->_pollInterval);
+    //this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
+    this->_nextPoll = millis() + 10000UL;
+    Serial.printf("Next Poll: %d\r\n", this->_nextPoll);
+    Serial.println(jsonBuffer["_links"].as<char*>());
+    if (jsonBuffer["_links"].isNull()) {
+      this->_putConfigDataHref[0] = '\0';
+      this->_getDeploymentBaseHref[0] = '\0';
+    } else {
+      if (!jsonBuffer["_links"]["deploymentBase"]["href"].isNull()) {
+        strncpy(this->_getDeploymentBaseHref, jsonBuffer["_links"]["deploymentBase"]["href"].as<char*>(), sizeof(this->_getDeploymentBaseHref));
+      } else {
+        this->_getDeploymentBaseHref[0] = '\0';
+      }
+      if (!jsonBuffer["_links"]["configData"]["href"].isNull()) {
+        strncpy(this->_putConfigDataHref, jsonBuffer["_links"]["configData"]["href"].as<char*>(), sizeof(this->_putConfigDataHref));
+      } else {
+        this->_putConfigDataHref[0] = '\0';
+      }
+      if (!jsonBuffer["_links"]["cancelAction"]["href"].isNull()) {
+        strncpy(this->_getCancelActionHref, jsonBuffer["_links"]["cancelAction"]["href"].as<char*>(), sizeof(this->_getCancelActionHref));
+      } else {
+        this->_getCancelActionHref[0] = '\0';
+      }
+    }
+
+    _client.stop();
+  }
+}
+
+unsigned long HawkbitDdi::convertTime(char *timeString) {
+  uint8_t partNo = 0;
+  unsigned long milliseconds = 0;
+  // Read each time pair
+  char* number = strtok(timeString, ":");
+  while (number != NULL)
+  {
+    int timeNumber = atoi(number);
+    switch (partNo) {
+      case 0:
+        // Hours
+        milliseconds += (unsigned long)timeNumber * 60UL * 60UL * 1000UL;
+        break;
+      case 1:
+        // Minutes
+        milliseconds += (unsigned long)timeNumber * 60UL * 1000UL;
+        break;
+      case 2:
+        // Seconds
+        milliseconds += (unsigned long)timeNumber * 1000UL;
+        break;
+      default:
+        return 0UL;
+    }
+    // Find the next command in input string
+    number = strtok(0, ":");
+    partNo++;
+  }
+  return milliseconds;
+}
+
+unsigned long HawkbitDdi::convertTime(String timeString) {
+  return HawkbitDdi::convertTime(timeString.c_str());
+}

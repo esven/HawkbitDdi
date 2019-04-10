@@ -110,6 +110,7 @@ class HawkbitDdi
     /* private member methods */
     void pollController();
     void getDeploymentBase();
+    void postDeploymentBaseFeedback();
     char * createHeaders();
     char * createHeaders(const char *serverName);
 

@@ -44,18 +44,18 @@ const char *HawkbitDdi::securityTypeString[HB_SEC_MAX] = {
 };
 
 const char *HawkbitDdi::executionStatusString[HB_EX_MAX] = {
-  [HB_EX_CANCELED] = "canceled",
-  [HB_EX_REJECTED] = "rejected",
-  [HB_EX_CLOSED] = "closed",
-  [HB_EX_PROCEEDING] = "proceeding",
-  [HB_EX_SCHEDULED] = "scheduled",
-  [HB_EX_RESUMED] = "resumed"
+  [HB_EX_CANCELED] = "canceled", // If cancellation has been requested and was successful
+  [HB_EX_REJECTED] = "rejected", // If update will not be installed at this time
+  [HB_EX_CLOSED] = "closed", // If update has been finished in success or failure state
+  [HB_EX_PROCEEDING] = "proceeding", // During download/check/installation/verification
+  [HB_EX_SCHEDULED] = "scheduled", // If update will be scheduled
+  [HB_EX_RESUMED] = "resumed" // If update has been resumed after scheduling
 };
 
 const char *HawkbitDdi::executionResultString[HB_RES_MAX] = {
-  [HB_RES_NONE] = "none",
-  [HB_RES_SUCCESS] = "success",
-  [HB_RES_FAILURE] = "failure"
+  [HB_RES_NONE] = "none", // If action is not in closed state, yet
+  [HB_RES_SUCCESS] = "success", // If action was completed successfully
+  [HB_RES_FAILURE] = "failure" // If action was completed with error
 };
 
 /* Static definitions for GET requests to use in printf functions */
@@ -78,6 +78,8 @@ HawkbitDdi::~HawkbitDdi(void) {
 
 void HawkbitDdi::begin(WiFiClientSecure client) {
   this->_client = client;
+  this->_currentExecutionStatus = HB_EX_CLOSED;
+  this->_currentExecutionResult = HB_RES_NONE;
   this->pollController();
   this->work();
 }
@@ -95,6 +97,24 @@ int HawkbitDdi::work() {
     }
     if (strnlen(this->_getCancelActionHref, sizeof(this->_getCancelActionHref)) > 0) {
       Serial.println("Need to get Cancel Action Information");
+    }
+    if (this->_currentActionId > 0) {
+      switch (this->_currentExecutionStatus) {
+        case HB_EX_PROCEEDING:
+          this->_currentExecutionStatus = HB_EX_CLOSED;
+          this->_currentExecutionResult = HB_RES_SUCCESS;
+          break;
+        case HB_EX_CLOSED:
+          break;
+        default:
+          this->_currentExecutionStatus = HB_EX_PROCEEDING;
+          this->_currentExecutionResult = HB_RES_NONE;
+          break;
+      }
+      this->postDeploymentBaseFeedback();
+      if (this->_currentExecutionStatus == HB_EX_CLOSED) {
+        this->_currentActionId = 0;
+      }
     }
   }
   return retStatus;
@@ -208,6 +228,10 @@ void HawkbitDdi::getDeploymentBase() {
     Serial.println();
     _client.stop();
     this->_currentActionId = atoi(jsonBuffer["id"].as<char *>());
+    if (this->_currentExecutionStatus == HB_EX_CLOSED) {
+      this->_currentExecutionStatus = HB_EX_PROCEEDING;
+      this->_currentExecutionResult = HB_RES_NONE;
+    }
     Serial.printf("Current Action ID: %d", this->_currentActionId);
   }
 }
@@ -225,6 +249,92 @@ void HawkbitDdi::pollController() {
     _client.print(this->createHeaders());
     // Close Headers field
     _client.println();
+
+    while (_client.connected()) {
+      String line = _client.readStringUntil('\n');
+      Serial.println(line);
+      if (line == "\r") {
+        Serial.println("headers received");
+        break;
+      }
+    }
+
+    /*
+        this->_nextPoll = millis() + 30000UL;
+        // if there are incoming bytes available
+        // from the server, read them and print them:
+        while (_client.available()) {
+          char c = _client.read();
+          Serial.write(c);
+        }
+        return;
+    */
+    auto error = deserializeJson(jsonBuffer, _client);
+    if (error) {
+      Serial.print(F("deserializeJson() failed with code "));
+      Serial.println(error.c_str());
+      _client.stop();
+      return;
+    }
+
+    // Extract values
+    Serial.println(F("Response:"));
+    serializeJsonPretty(jsonBuffer, Serial);
+    Serial.println();
+    strncpy(timeString, jsonBuffer["config"]["polling"]["sleep"].as<char*>(), sizeof(timeString));
+    //  Serial.println(timeString);
+    this->_pollInterval = HawkbitDdi::convertTime(timeString);
+    Serial.printf("Poll Interval: %d\r\n", this->_pollInterval);
+    //this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
+    this->_nextPoll = millis() + 10000UL;
+    Serial.printf("Next Poll: %d\r\n", this->_nextPoll);
+    Serial.println(jsonBuffer["_links"].as<char*>());
+    if (jsonBuffer["_links"].isNull()) {
+      this->_putConfigDataHref[0] = '\0';
+      this->_getDeploymentBaseHref[0] = '\0';
+    } else {
+      if (!jsonBuffer["_links"]["deploymentBase"]["href"].isNull()) {
+        strncpy(this->_getDeploymentBaseHref, jsonBuffer["_links"]["deploymentBase"]["href"].as<char*>(), sizeof(this->_getDeploymentBaseHref));
+      } else {
+        this->_getDeploymentBaseHref[0] = '\0';
+      }
+      if (!jsonBuffer["_links"]["configData"]["href"].isNull()) {
+        strncpy(this->_putConfigDataHref, jsonBuffer["_links"]["configData"]["href"].as<char*>(), sizeof(this->_putConfigDataHref));
+      } else {
+        this->_putConfigDataHref[0] = '\0';
+      }
+      if (!jsonBuffer["_links"]["cancelAction"]["href"].isNull()) {
+        strncpy(this->_getCancelActionHref, jsonBuffer["_links"]["cancelAction"]["href"].as<char*>(), sizeof(this->_getCancelActionHref));
+      } else {
+        this->_getCancelActionHref[0] = '\0';
+      }
+    }
+
+    _client.stop();
+  }
+}
+
+void HawkbitDdi::postDeploymentBaseFeedback() {
+  char timeString[16];
+  int i = 0;
+  jsonBuffer.clear();
+  jsonBuffer["id"] = String(this->_currentActionId);
+  jsonBuffer["time"] = "20190511T121314";
+  jsonBuffer["status"]["execution"] = HawkbitDdi::executionStatusString[this->_currentExecutionStatus];
+  jsonBuffer["status"]["result"]["finished"] = HawkbitDdi::executionResultString[this->_currentExecutionResult];
+  Serial.println("\nStarting connection to server...");
+  if (!_client.connect(this->_serverName.c_str(), this->_serverPort))
+    Serial.println("Connection failed!");
+  else {
+    Serial.println("Connected to server!");
+    // Make a HTTP request:
+    _client.printf(HawkbitDdi::_postDeploymentBaseFeedback, this->_tenantId.c_str(), this->_controllerId.c_str(), this->_currentActionId);
+    _client.print(this->createHeaders());
+    _client.println("Content-Type: application/json");
+    _client.printf("Content-Length: %d\r\n", measureJson(jsonBuffer));
+    // Close Headers field
+    _client.println();
+    serializeJson(jsonBuffer, _client);
 
     while (_client.connected()) {
       String line = _client.readStringUntil('\n');

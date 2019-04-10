@@ -56,6 +56,13 @@ enum HB_EXECUTION_RESULT {
   HB_RES_MAX
 };
 
+enum HB_CONFIGDATA_MODE {
+  HB_CONFIGDATA_MERGE,
+  HB_CONFIGDATA_REPLACE,
+  HB_CONFIGDATA_REMOVE,
+  HB_CONFIGDATA_MAX
+};
+
 class HawkbitDdi
 {
   public:
@@ -68,8 +75,9 @@ class HawkbitDdi
 
     int work();
 
-    void setConfigData(String configData);
-    void setConfigData(JsonObject configData);
+    void setConfigData(char *jsonString) {
+      strncpy(this->_configData, jsonString, sizeof(this->_configData));
+    }
 
   protected:
 
@@ -78,6 +86,7 @@ class HawkbitDdi
     static const char *securityTypeString[];
     static const char *executionStatusString[];
     static const char *executionResultString[];
+    static const char *configDataModeString[];
     static const char *_getRequest;
     static const char *_getRootController;
     static const char *_putConfigData;
@@ -90,8 +99,7 @@ class HawkbitDdi
     char _putConfigDataHref[512];
     char _getDeploymentBaseHref[512];
     char _getCancelActionHref[512];
-
-    JsonObject configData;
+    char _configData[512];
 
     unsigned long _nextPoll = 0;
     /* Default the pollInterval to 5 Minutes */
@@ -109,6 +117,8 @@ class HawkbitDdi
 
     /* private member methods */
     void pollController();
+    void putConfigData();
+    void putConfigData(HB_CONFIGDATA_MODE cf_mode);
     void getDeploymentBase();
     void postDeploymentBaseFeedback();
     char * createHeaders();

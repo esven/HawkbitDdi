@@ -44,15 +44,25 @@ const char *rootCACertificate = "-----BEGIN CERTIFICATE-----\n" \
 #define SERVER_NAME F("")
 #define SERVER_PORT 443
 
+#define __FILENAME__ (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+
 HawkbitDdi hawkbit(SERVER_NAME, SERVER_PORT, TENANT_ID, CONTROLLER_ID, SECURITY_TOKEN, HB_SEC_TARGETTOKEN);
 WiFiClientSecure client;
 
+// Allocate JsonBuffer for biggest possible JSON document in DDI API
+// Use arduinojson.org/assistant to compute the capacity.
+const size_t capacity = JSON_OBJECT_SIZE(10) + 100;
+static DynamicJsonDocument configDataDocument(capacity);
+
 void setup() {
   uint64_t chipid;
+  char chipidstring[32];
+  char configData[128];
   Serial.begin(115200);
   chipid = ESP.getEfuseMac(); //The chip ID is essentially its MAC address(length: 6 bytes).
   Serial.printf("ESP32 Chip ID = %04X", (uint16_t)(chipid >> 32)); //print High 2 bytes
   Serial.printf("%08X\n", (uint32_t)chipid); //print Low 4bytes.
+  snprintf(chipidstring, sizeof(chipidstring), "ESP32-%04X%08X", (uint16_t)(chipid >> 32), (uint32_t)chipid);
 
   // We start by connecting to a WiFi network
 
@@ -76,6 +86,11 @@ void setup() {
   client.setCACert(rootCACertificate);
   // Reading data over SSL may be slow, use an adequate timeout
   client.setTimeout(12000);
+  configDataDocument.clear();
+  configDataDocument["chipid"] = chipidstring;
+  configDataDocument["program"] = __FILENAME__;
+  serializeJson(configDataDocument, configData);
+  hawkbit.setConfigData(configData);
   hawkbit.begin(client);
 }
 

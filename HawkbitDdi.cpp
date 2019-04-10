@@ -36,6 +36,14 @@ static DynamicJsonDocument jsonBuffer(capacity);
 #define HEADERSIZE 1024
 static char headers[HEADERSIZE];
 
+typedef struct str_href {
+  char href_server[64];
+  int16_t href_port;
+  char href_url[512];
+} t_href;
+
+t_href href_param;
+
 const char *HawkbitDdi::securityTypeString[HB_SEC_MAX] = {
   [HB_SEC_CLIENTCERTIFICATE] = NULL,
   [HB_SEC_GATEWAYTOKEN] = "GatewayToken",
@@ -58,11 +66,19 @@ const char *HawkbitDdi::executionResultString[HB_RES_MAX] = {
   [HB_RES_FAILURE] = "failure" // If action was completed with error
 };
 
+const char *HawkbitDdi::configDataModeString[HB_CONFIGDATA_MAX] = {
+  [HB_CONFIGDATA_MERGE] = "merge", // If action is not in closed state, yet
+  [HB_CONFIGDATA_REPLACE] = "replace", // If action was completed successfully
+  [HB_CONFIGDATA_REMOVE] = "remove" // If action was completed with error
+};
+
 /* Static definitions for GET requests to use in printf functions */
 const char *HawkbitDdi::_getRequest = "GET %s HTTP/1.1\r\n";
 const char *HawkbitDdi::_getRootController = "GET /%s/controller/v1/%s HTTP/1.1\r\n";
 const char *HawkbitDdi::_putConfigData = "PUT /%s/controller/v1/%s/configData HTTP/1.1\r\n";
 const char *HawkbitDdi::_postDeploymentBaseFeedback = "POST /%s/controller/v1/%s/deploymentBase/%d/feedback HTTP/1.1\r\n";
+
+static void splitHref(char *href_string);
 
 HawkbitDdi::HawkbitDdi(String serverName, uint16_t serverPort, String tenantId, String controllerId, String securityToken, HB_SECURITY_TYPE securityType) {
   this->_serverName = serverName;
@@ -81,6 +97,7 @@ void HawkbitDdi::begin(WiFiClientSecure client) {
   this->_currentExecutionStatus = HB_EX_CLOSED;
   this->_currentExecutionResult = HB_RES_NONE;
   this->pollController();
+  this->putConfigData(HB_CONFIGDATA_REPLACE);
   this->work();
 }
 
@@ -90,6 +107,7 @@ int HawkbitDdi::work() {
     this->pollController();
     if (strnlen(this->_putConfigDataHref, sizeof(this->_putConfigDataHref)) > 0) {
       Serial.println("Need to put config data");
+      this->putConfigData();
     }
     if (strnlen(this->_getDeploymentBaseHref, sizeof(this->_getDeploymentBaseHref)) > 0) {
       Serial.println("Need to get Deployment Base");
@@ -146,14 +164,12 @@ char * HawkbitDdi::createHeaders(const char *serverName) {
   return headers;
 }
 
-void HawkbitDdi::getDeploymentBase() {
-  char tmpServer[64];
-  int tmpPort;
-  char tmpGet[384];
+static void splitHref(char *href_string) {
   Serial.println("Split DeploymentBaseHref");
   uint8_t partNo = 0;
+  memset(&href_param, 0, sizeof(href_param));
   // Read each time pair
-  char* component = strtok(this->_getDeploymentBaseHref, "/");
+  char* component = strtok(href_string, "/");
   while (component != NULL)
   {
     switch (partNo) {
@@ -163,34 +179,38 @@ void HawkbitDdi::getDeploymentBase() {
         component = strtok(NULL, ":");
         break;
       case 1:
-        strncpy(tmpServer, &component[1], sizeof(tmpServer));
+        strncpy(href_param.href_server, &component[1], sizeof(href_param.href_server));
         // Find the next command in input string
         component = strtok(NULL, "/");
         break;
       case 2:
-        tmpPort = atoi(component);
+        href_param.href_port = atoi(component);
         // Find the next command in input string
         component = strtok(NULL, "");
         break;
       case 3:
-        tmpGet[0] = '/';
-        strncpy(&tmpGet[1], component, sizeof(tmpGet) - 1);
+        href_param.href_url[0] = '/';
+        strncpy(&href_param.href_url[1], component, sizeof(href_param.href_url) - 1);
         // Find the next command in input string
         component = strtok(NULL, "");
         break;
     }
     partNo++;
   }
+}
+
+void HawkbitDdi::getDeploymentBase() {
+  splitHref(this->_getDeploymentBaseHref);
   this->_getDeploymentBaseHref[0] = '\0';
-  Serial.printf("Server: %s:%d, GET %s\r\n", tmpServer, tmpPort, tmpGet);
+  Serial.printf("Server: %s:%d, GET %s\r\n", href_param.href_server, href_param.href_port, href_param.href_url);
   Serial.println("\nStarting connection to server...");
-  if (!_client.connect(tmpServer, tmpPort))
+  if (!_client.connect(href_param.href_server, href_param.href_port)) {
     Serial.println("Connection failed!");
-  else {
+  } else {
     Serial.println("Connected to server!");
     // Make a HTTP request:
-    _client.printf(HawkbitDdi::_getRequest, tmpGet);
-    _client.print(this->createHeaders(tmpServer));
+    _client.printf(HawkbitDdi::_getRequest, href_param.href_url);
+    _client.print(this->createHeaders(href_param.href_server));
     // Close Headers field
     _client.println();
 
@@ -202,18 +222,6 @@ void HawkbitDdi::getDeploymentBase() {
         break;
       }
     }
-
-    /*
-         this->_nextPoll = millis() + 30000UL;
-         // if there are incoming bytes available
-         // from the server, read them and print them:
-         while (_client.available()) {
-           char c = _client.read();
-           Serial.write(c);
-         }
-         _client.stop();
-         return;
-    */
     auto error = deserializeJson(jsonBuffer, _client);
     if (error) {
       Serial.print(F("deserializeJson() failed with code "));
@@ -258,17 +266,6 @@ void HawkbitDdi::pollController() {
         break;
       }
     }
-
-    /*
-        this->_nextPoll = millis() + 30000UL;
-        // if there are incoming bytes available
-        // from the server, read them and print them:
-        while (_client.available()) {
-          char c = _client.read();
-          Serial.write(c);
-        }
-        return;
-    */
     auto error = deserializeJson(jsonBuffer, _client);
     if (error) {
       Serial.print(F("deserializeJson() failed with code "));
@@ -285,8 +282,8 @@ void HawkbitDdi::pollController() {
     //  Serial.println(timeString);
     this->_pollInterval = HawkbitDdi::convertTime(timeString);
     Serial.printf("Poll Interval: %d\r\n", this->_pollInterval);
-    //this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
-    this->_nextPoll = millis() + 10000UL;
+    this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
+    //this->_nextPoll = millis() + 10000UL;
     Serial.printf("Next Poll: %d\r\n", this->_nextPoll);
     Serial.println(jsonBuffer["_links"].as<char*>());
     if (jsonBuffer["_links"].isNull()) {
@@ -316,7 +313,6 @@ void HawkbitDdi::pollController() {
 
 void HawkbitDdi::postDeploymentBaseFeedback() {
   char timeString[16];
-  int i = 0;
   jsonBuffer.clear();
   jsonBuffer["id"] = String(this->_currentActionId);
   jsonBuffer["time"] = "20190511T121314";
@@ -344,58 +340,46 @@ void HawkbitDdi::postDeploymentBaseFeedback() {
         break;
       }
     }
+    _client.stop();
+  }
+}
 
-    /*
-        this->_nextPoll = millis() + 30000UL;
-        // if there are incoming bytes available
-        // from the server, read them and print them:
-        while (_client.available()) {
-          char c = _client.read();
-          Serial.write(c);
-        }
-        return;
-    */
-    auto error = deserializeJson(jsonBuffer, _client);
-    if (error) {
-      Serial.print(F("deserializeJson() failed with code "));
-      Serial.println(error.c_str());
-      _client.stop();
-      return;
-    }
+void HawkbitDdi::putConfigData() {
+  this->putConfigData(HB_CONFIGDATA_MERGE);
+}
 
-    // Extract values
-    Serial.println(F("Response:"));
+void HawkbitDdi::putConfigData(HB_CONFIGDATA_MODE cf_mode) {
+  char timeString[16];
+  jsonBuffer.clear();
+  jsonBuffer["id"] = String(this->_currentActionId);
+  jsonBuffer["time"] = "20190511T121314";
+  jsonBuffer["status"]["execution"] = HawkbitDdi::executionStatusString[this->_currentExecutionStatus];
+  jsonBuffer["status"]["result"]["finished"] = HawkbitDdi::executionResultString[this->_currentExecutionResult];
+  jsonBuffer["data"] = serialized(this->_configData);
+  jsonBuffer["mode"] = HawkbitDdi::configDataModeString[cf_mode];
+  Serial.println("\nStarting connection to server...");
+  if (!_client.connect(this->_serverName.c_str(), this->_serverPort))
+    Serial.println("Connection failed!");
+  else {
+    Serial.println("Connected to server!");
+    // Make a HTTP request:
+    _client.printf(HawkbitDdi::_putConfigData, this->_tenantId.c_str(), this->_controllerId.c_str());
+    _client.print(this->createHeaders());
+    _client.println("Content-Type: application/json");
+    _client.printf("Content-Length: %d\r\n", measureJson(jsonBuffer));
+    // Close Headers field
+    _client.println();
+    serializeJson(jsonBuffer, _client);
     serializeJsonPretty(jsonBuffer, Serial);
-    Serial.println();
-    strncpy(timeString, jsonBuffer["config"]["polling"]["sleep"].as<char*>(), sizeof(timeString));
-    //  Serial.println(timeString);
-    this->_pollInterval = HawkbitDdi::convertTime(timeString);
-    Serial.printf("Poll Interval: %d\r\n", this->_pollInterval);
-    //this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
-    this->_nextPoll = millis() + 10000UL;
-    Serial.printf("Next Poll: %d\r\n", this->_nextPoll);
-    Serial.println(jsonBuffer["_links"].as<char*>());
-    if (jsonBuffer["_links"].isNull()) {
-      this->_putConfigDataHref[0] = '\0';
-      this->_getDeploymentBaseHref[0] = '\0';
-    } else {
-      if (!jsonBuffer["_links"]["deploymentBase"]["href"].isNull()) {
-        strncpy(this->_getDeploymentBaseHref, jsonBuffer["_links"]["deploymentBase"]["href"].as<char*>(), sizeof(this->_getDeploymentBaseHref));
-      } else {
-        this->_getDeploymentBaseHref[0] = '\0';
-      }
-      if (!jsonBuffer["_links"]["configData"]["href"].isNull()) {
-        strncpy(this->_putConfigDataHref, jsonBuffer["_links"]["configData"]["href"].as<char*>(), sizeof(this->_putConfigDataHref));
-      } else {
-        this->_putConfigDataHref[0] = '\0';
-      }
-      if (!jsonBuffer["_links"]["cancelAction"]["href"].isNull()) {
-        strncpy(this->_getCancelActionHref, jsonBuffer["_links"]["cancelAction"]["href"].as<char*>(), sizeof(this->_getCancelActionHref));
-      } else {
-        this->_getCancelActionHref[0] = '\0';
+
+    while (_client.connected()) {
+      String line = _client.readStringUntil('\n');
+      Serial.println(line);
+      if (line == "\r") {
+        Serial.println("headers received");
+        break;
       }
     }
-
     _client.stop();
   }
 }

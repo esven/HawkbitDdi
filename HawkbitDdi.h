@@ -63,6 +63,14 @@ enum HB_CONFIGDATA_MODE {
   HB_CONFIGDATA_MAX
 };
 
+enum HB_DEPLOYMENT_MODE {
+  HB_DEPLOYMENT_NONE,
+  HB_DEPLOYMENT_SKIP,
+  HB_DEPLOYMENT_ATTEMPT,
+  HB_DEPLOYMENT_FORCE,
+  HB_DEPLOYMENT_MAX
+};
+
 class HawkbitDdi
 {
   public:
@@ -87,6 +95,7 @@ class HawkbitDdi
     static const char *executionStatusString[];
     static const char *executionResultString[];
     static const char *configDataModeString[];
+    static const char *deploymentModeString[];
     static const char *_getRequest;
     static const char *_getRootController;
     static const char *_putConfigData;
@@ -99,11 +108,14 @@ class HawkbitDdi
     char _putConfigDataHref[512];
     char _getDeploymentBaseHref[512];
     char _getCancelActionHref[512];
+    char _getSoftwareModuleHref[1024];
     char _configData[512];
 
     unsigned long _nextPoll = 0;
     /* Default the pollInterval to 5 Minutes */
-    unsigned long _pollInterval = 300000;
+    unsigned long _pollInterval = 300000UL;
+    unsigned long _jobSchedule;
+    bool _jobFeedbackChanged = false;
     int _currentActionId = -1;
     WiFiClientSecure _client;
     uint16_t _serverPort;
@@ -114,6 +126,7 @@ class HawkbitDdi
     HB_SECURITY_TYPE _securityType;
     HB_EXECUTION_STATUS _currentExecutionStatus;
     HB_EXECUTION_RESULT _currentExecutionResult;
+    HB_DEPLOYMENT_MODE _currentDeploymentMode;
 
     /* private member methods */
     void pollController();
@@ -121,6 +134,7 @@ class HawkbitDdi
     void putConfigData(HB_CONFIGDATA_MODE cf_mode);
     void getDeploymentBase();
     void postDeploymentBaseFeedback();
+    HB_DEPLOYMENT_MODE parseDeploymentMode(const char *deploymentmode);
     char * createHeaders();
     char * createHeaders(const char *serverName);
 

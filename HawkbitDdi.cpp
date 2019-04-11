@@ -72,6 +72,13 @@ const char *HawkbitDdi::configDataModeString[HB_CONFIGDATA_MAX] = {
   [HB_CONFIGDATA_REMOVE] = "remove" // If action was completed with error
 };
 
+const char *HawkbitDdi::deploymentModeString[HB_DEPLOYMENT_MAX] = {
+  [HB_DEPLOYMENT_NONE] = NULL, // Unknown deployment mode
+  [HB_DEPLOYMENT_SKIP] = "skip", // do not update, yet
+  [HB_DEPLOYMENT_ATTEMPT] = "attempt", // server asks to update
+  [HB_DEPLOYMENT_FORCE] = "force" // server requests immediate update
+};
+
 /* Static definitions for GET requests to use in printf functions */
 const char *HawkbitDdi::_getRequest = "GET %s HTTP/1.1\r\n";
 const char *HawkbitDdi::_getRootController = "GET /%s/controller/v1/%s HTTP/1.1\r\n";
@@ -116,23 +123,35 @@ int HawkbitDdi::work() {
     if (strnlen(this->_getCancelActionHref, sizeof(this->_getCancelActionHref)) > 0) {
       Serial.println("Need to get Cancel Action Information");
     }
-    if (this->_currentActionId > 0) {
-      switch (this->_currentExecutionStatus) {
-        case HB_EX_PROCEEDING:
+  }
+  if (this->_currentActionId > 0) {
+    switch (this->_currentExecutionStatus) {
+      case HB_EX_PROCEEDING:
+        this->_currentExecutionStatus = HB_EX_CLOSED;
+        this->_currentExecutionResult = HB_RES_SUCCESS;
+        this->_jobFeedbackChanged = true;
+        break;
+      case HB_EX_SCHEDULED:
+        if (millis() > this->_jobSchedule) {
           this->_currentExecutionStatus = HB_EX_CLOSED;
           this->_currentExecutionResult = HB_RES_SUCCESS;
-          break;
-        case HB_EX_CLOSED:
-          break;
-        default:
-          this->_currentExecutionStatus = HB_EX_PROCEEDING;
-          this->_currentExecutionResult = HB_RES_NONE;
-          break;
-      }
+          this->_jobFeedbackChanged = true;
+        }
+        break;
+      case HB_EX_CLOSED:
+        break;
+      default:
+        this->_currentExecutionStatus = HB_EX_PROCEEDING;
+        this->_currentExecutionResult = HB_RES_NONE;
+        this->_jobFeedbackChanged = true;
+        break;
+    }
+    if (this->_jobFeedbackChanged) {
       this->postDeploymentBaseFeedback();
-      if (this->_currentExecutionStatus == HB_EX_CLOSED) {
-        this->_currentActionId = 0;
-      }
+      this->_jobFeedbackChanged = false;
+    }
+    if (this->_currentExecutionStatus == HB_EX_CLOSED) {
+      this->_currentActionId = 0;
     }
   }
   return retStatus;
@@ -165,7 +184,7 @@ char * HawkbitDdi::createHeaders(const char *serverName) {
 }
 
 static void splitHref(char *href_string) {
-  Serial.println("Split DeploymentBaseHref");
+  Serial.println("Split Href");
   uint8_t partNo = 0;
   memset(&href_param, 0, sizeof(href_param));
   // Read each time pair
@@ -197,6 +216,20 @@ static void splitHref(char *href_string) {
     }
     partNo++;
   }
+}
+
+HB_DEPLOYMENT_MODE HawkbitDdi::parseDeploymentMode(const char *deploymentmode) {
+  HB_DEPLOYMENT_MODE returnMode = HB_DEPLOYMENT_NONE;
+  if (deploymentmode == NULL) {
+    return returnMode;
+  }
+  for (int i = 0; i < HB_DEPLOYMENT_MAX; i++) {
+    if (strncmp(HawkbitDdi::deploymentModeString[i], deploymentmode, sizeof(HawkbitDdi::deploymentModeString[i]) + 1) == 0) {
+      returnMode = (HB_DEPLOYMENT_MODE)i;
+      break;
+    }
+  }
+  return returnMode;
 }
 
 void HawkbitDdi::getDeploymentBase() {
@@ -236,9 +269,20 @@ void HawkbitDdi::getDeploymentBase() {
     Serial.println();
     _client.stop();
     this->_currentActionId = atoi(jsonBuffer["id"].as<char *>());
+    this->_currentDeploymentMode = parseDeploymentMode(jsonBuffer["deployment"]["update"].as<char *>());
     if (this->_currentExecutionStatus == HB_EX_CLOSED) {
-      this->_currentExecutionStatus = HB_EX_PROCEEDING;
-      this->_currentExecutionResult = HB_RES_NONE;
+      if (this->_currentDeploymentMode == HB_DEPLOYMENT_FORCE) {
+        /* Immediately start downloading and updating */
+        this->_currentExecutionStatus = HB_EX_PROCEEDING;
+        this->_currentExecutionResult = HB_RES_NONE;
+        this->_jobFeedbackChanged = true;
+      } else if (this->_currentDeploymentMode == HB_DEPLOYMENT_ATTEMPT) {
+        /* Schedule downloading and updating in 10 minute */
+        this->_currentExecutionStatus = HB_EX_SCHEDULED;
+        this->_currentExecutionResult = HB_RES_NONE;
+        this->_jobSchedule = millis() + 600000UL;
+        this->_jobFeedbackChanged = true;
+      }
     }
     Serial.printf("Current Action ID: %d", this->_currentActionId);
   }

@@ -3,11 +3,14 @@
 #include <ArduinoJson.h>
 #include <HawkbitDdi.h>
 
+#define PROGRAMNAME "ESP32HawkbitUpdate"
+#define VERSION "1.0.0"
+
 // Set these to your desired credentials.
 const char *ssid = "";
 const char *password = "";
 
-const char *rootCACertificate = "-----BEGIN CERTIFICATE-----\n" \
+const String rootCACertificate = F("-----BEGIN CERTIFICATE-----\n" \
                                 "MIIFYDCCA0igAwIBAgIURFc0JFuBiZs18s64KztbpybwdSgwDQYJKoZIhvcNAQEL\n" \
                                 "BQAwSDELMAkGA1UEBhMCQk0xGTAXBgNVBAoTEFF1b1ZhZGlzIExpbWl0ZWQxHjAc\n" \
                                 "BgNVBAMTFVF1b1ZhZGlzIFJvb3QgQ0EgMiBHMzAeFw0xMjAxMTIxODU5MzJaFw00\n" \
@@ -37,7 +40,7 @@ const char *rootCACertificate = "-----BEGIN CERTIFICATE-----\n" \
                                 "KCLjsZWDzYWm3S8P52dSbrsvhXz1SnPnxT7AvSESBT/8twNJAlvIJebiVDj1eYeM\n" \
                                 "HVOyToV7BjjHLPj4sHKNJeV3UvQDHEimUF+IIDBu8oJDqz2XhOdT+yHBTw8imoa4\n" \
                                 "WSr2Rz0ZiC3oheGe7IUIarFsNMkd7EgrO3jtZsSOeWmD3n+M\n" \
-                                "-----END CERTIFICATE-----";
+                                "-----END CERTIFICATE-----");
 #define TENANT_ID F("")
 #define CONTROLLER_ID F("")
 #define SECURITY_TOKEN F("")
@@ -83,12 +86,14 @@ void setup() {
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 
-  client.setCACert(rootCACertificate);
+  client.setCACert(rootCACertificate.c_str());
   // Reading data over SSL may be slow, use an adequate timeout
   client.setTimeout(12000);
   configDataDocument.clear();
   configDataDocument["chipid"] = chipidstring;
-  configDataDocument["program"] = __FILENAME__;
+  configDataDocument["filename"] = __FILENAME__;
+  configDataDocument["program"] = VERSION;
+  configDataDocument["version"] = VERSION;
   serializeJson(configDataDocument, configData);
   hawkbit.setConfigData(configData);
   hawkbit.begin(client);

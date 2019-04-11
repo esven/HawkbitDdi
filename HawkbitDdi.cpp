@@ -26,6 +26,7 @@
 #include "HawkbitDdi.h"
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <Update.h>
 
 // Allocate JsonBuffer for biggest possible JSON document in DDI API
 // Use arduinojson.org/assistant to compute the capacity.
@@ -162,6 +163,10 @@ char * HawkbitDdi::createHeaders() {
 }
 
 char * HawkbitDdi::createHeaders(const char *serverName) {
+  return this->createHeaders(serverName, "application/hal+json");
+}
+
+char * HawkbitDdi::createHeaders(const char *serverName, const char *acceptType) {
   size_t strsize = 0;
   snprintf(headers, HEADERSIZE, "Host: %s\r\n", serverName);
   strsize = strnlen(headers, HEADERSIZE);
@@ -176,8 +181,10 @@ char * HawkbitDdi::createHeaders(const char *serverName) {
       /* No Authorization Header needed */
       break;
   }
-  snprintf(headers + strsize, HEADERSIZE - strsize, "Accept: application/hal+json\r\n");
-  strsize = strnlen(headers, HEADERSIZE);
+  if (acceptType != NULL && strlen(acceptType) > 0) {
+    snprintf(headers + strsize, HEADERSIZE - strsize, "Accept: %s\r\n", acceptType);
+    strsize = strnlen(headers, HEADERSIZE);
+  }
   snprintf(headers + strsize, HEADERSIZE - strsize, "Connection: close\r\n");
   strsize = strnlen(headers, HEADERSIZE);
   return headers;
@@ -230,6 +237,47 @@ HB_DEPLOYMENT_MODE HawkbitDdi::parseDeploymentMode(const char *deploymentmode) {
     }
   }
   return returnMode;
+}
+
+void HawkbitDdi::getAndInstallUpdateImage() {
+  splitHref(this->_getSoftwareModuleHref);
+  this->_getSoftwareModuleHref[0] = '\0';
+  Serial.printf("Server: %s:%d, GET %s\r\n", href_param.href_server, href_param.href_port, href_param.href_url);
+  Serial.println("\nStarting connection to server...");
+  if (!_client.connect(href_param.href_server, href_param.href_port)) {
+    Serial.println("Connection failed!");
+  } else {
+    Serial.println("Connected to server!");
+    // Make a HTTP request:
+    _client.printf(HawkbitDdi::_getRequest, href_param.href_url);
+    _client.print(this->createHeaders(href_param.href_server, "application/octet-stream"));
+    // Close Headers field
+    _client.println();
+
+    while (_client.connected()) {
+      String line = _client.readStringUntil('\n');
+      Serial.println(line);
+      if (line == "\r") {
+        Serial.println("headers received");
+        break;
+      }
+    }
+    Update.begin(this->_updateSize, U_FLASH);
+    Serial.printf("%d Bytes written\r\n", Update.writeStream(_client));
+    if (Update.end()) {
+      Serial.println("OTA done!");
+      if (Update.isFinished()) {
+        Serial.println("Update successfully completed. Rebooting.");
+      }
+      else {
+        Serial.println("Update not finished? Something went wrong!");
+      }
+    }
+    else {
+      Serial.println("Error Occurred. Error #: " + String(Update.getError()));
+    }
+    _client.stop();
+  }
 }
 
 void HawkbitDdi::getDeploymentBase() {

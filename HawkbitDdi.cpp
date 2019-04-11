@@ -123,6 +123,7 @@ int HawkbitDdi::work() {
     }
     if (strnlen(this->_getCancelActionHref, sizeof(this->_getCancelActionHref)) > 0) {
       Serial.println("Need to get Cancel Action Information");
+      this->getCancelAction();
     }
   }
   if (this->_currentActionId > 0) {
@@ -140,6 +141,7 @@ int HawkbitDdi::work() {
           this->_jobFeedbackChanged = true;
         }
         break;
+      case HB_EX_CANCELED:
       case HB_EX_CLOSED:
         break;
       default:
@@ -149,7 +151,11 @@ int HawkbitDdi::work() {
         break;
     }
     if (this->_jobFeedbackChanged) {
-      this->postDeploymentBaseFeedback();
+      if (this->_currentExecutionStatus == HB_EX_CANCELED) {
+        this->postCancelFeedback();
+      } else {
+        this->postDeploymentBaseFeedback();
+      }
       this->_jobFeedbackChanged = false;
     }
     if (this->_currentExecutionStatus == HB_EX_CLOSED) {
@@ -227,7 +233,7 @@ static void splitHref(char *href_string) {
       case 3:
         curLen = strnlen(href_param.href_url, sizeof(href_param.href_url));
         href_param.href_url[curLen] = '/';
-        strncpy(&href_param.href_url[curLen + 1], component, sizeof(href_param.href_url)- curLen - 1);
+        strncpy(&href_param.href_url[curLen + 1], component, sizeof(href_param.href_url) - curLen - 1);
         // Find the next command in input string
         component = strtok(NULL, "");
         break;
@@ -471,6 +477,110 @@ void HawkbitDdi::postDeploymentBaseFeedback() {
     }
     _client.stop();
   }
+}
+
+void HawkbitDdi::getCancelAction() {
+  int actionId;
+  splitHref(this->_getCancelActionHref);
+  this->_getCancelActionHref[0] = '\0';
+  Serial.printf("Server: %s:%d, GET %s\r\n", href_param.href_server, href_param.href_port, href_param.href_url);
+  Serial.println("\nStarting connection to server...");
+  if (!_client.connect(href_param.href_server, href_param.href_port)) {
+    Serial.println("Connection failed!");
+  } else {
+    Serial.println("Connected to server!");
+    // Make a HTTP request:
+    _client.printf(HawkbitDdi::_getRequest, href_param.href_url);
+    _client.print(this->createHeaders(href_param.href_server));
+    // Close Headers field
+    _client.println();
+
+    while (_client.connected()) {
+      String line = _client.readStringUntil('\n');
+      Serial.println(line);
+      if (line == "\r") {
+        Serial.println("headers received");
+        break;
+      }
+    }
+    auto error = deserializeJson(jsonBuffer, _client);
+    if (error) {
+      Serial.print(F("deserializeJson() failed with code "));
+      Serial.println(error.c_str());
+      _client.stop();
+      return;
+    }
+
+    // Extract values
+    Serial.println(F("Response:"));
+    serializeJsonPretty(jsonBuffer, Serial);
+    Serial.println();
+    _client.stop();
+    Serial.println("Storing Values");
+    actionId = atoi(jsonBuffer["cancelAction"]["stopId"].as<char *>());
+    if (this->_currentActionId == actionId) {
+      Serial.printf("Canceled Action ID: %d\r\n", this->_currentActionId);
+      /* Immediately start downloading and updating */
+      this->_currentExecutionStatus = HB_EX_CANCELED;
+      this->_currentExecutionResult = HB_RES_SUCCESS;
+      this->_jobFeedbackChanged = true;
+    } else {
+      this->_currentActionId = actionId;
+      Serial.printf("Canceled Action ID: %d\r\n", this->_currentActionId);
+      /* Immediately start downloading and updating */
+      this->_currentExecutionStatus = HB_EX_CANCELED;
+      this->_currentExecutionResult = HB_RES_FAILURE;
+      this->_jobFeedbackChanged = true;
+    }
+  }
+  Serial.println("CancelAction finished");
+}
+
+void HawkbitDdi::postCancelFeedback() {
+  char timeString[16];
+  if (this->_currentExecutionStatus == HB_EX_CANCELED) {
+    this->_currentExecutionStatus = HB_EX_CLOSED;
+    this->_currentExecutionResult = HB_RES_SUCCESS;
+  } else {
+    this->_currentExecutionStatus = HB_EX_CLOSED;
+    this->_currentExecutionResult = HB_RES_FAILURE;
+  }
+  jsonBuffer.clear();
+  jsonBuffer["id"] = String(this->_currentActionId);
+  jsonBuffer["time"] = "20190511T121314";
+  jsonBuffer["status"]["execution"] = HawkbitDdi::executionStatusString[this->_currentExecutionStatus];
+  jsonBuffer["status"]["result"]["finished"] = HawkbitDdi::executionResultString[this->_currentExecutionResult];
+  Serial.println("\nStarting connection to server...");
+  if (!_client.connect(this->_serverName.c_str(), this->_serverPort))
+    Serial.println("Connection failed!");
+  else {
+    Serial.println("Connected to server!");
+    // Make a HTTP request:
+    _client.printf(HawkbitDdi::_postDeploymentBaseFeedback, this->_tenantId.c_str(), this->_controllerId.c_str(), this->_currentActionId);
+    _client.print(this->createHeaders());
+    _client.println("Content-Type: application/json");
+    _client.printf("Content-Length: %d\r\n", measureJson(jsonBuffer));
+    // Close Headers field
+    _client.println();
+    serializeJson(jsonBuffer, _client);
+
+    while (_client.connected()) {
+      String line = _client.readStringUntil('\n');
+      Serial.println(line);
+      if (line == "\r") {
+        Serial.println("headers received");
+        break;
+      }
+    }
+    // if there are incoming bytes available
+    // from the server, read them and print them:
+    while (_client.available()) {
+      char c = _client.read();
+      Serial.write(c);
+    }
+    _client.stop();
+  }
+  this->_currentActionId = 0;
 }
 
 void HawkbitDdi::putConfigData() {

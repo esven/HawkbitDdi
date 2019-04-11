@@ -135,6 +135,8 @@ class HawkbitDdi
     void putConfigData(HB_CONFIGDATA_MODE cf_mode);
     void getDeploymentBase();
     void postDeploymentBaseFeedback();
+    void getCancelAction();
+    void postCancelFeedback();
     void getAndInstallUpdateImage();
     static HB_DEPLOYMENT_MODE parseDeploymentMode(const char *deploymentmode);
     char * createHeaders();

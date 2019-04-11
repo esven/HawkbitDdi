@@ -269,6 +269,7 @@ void HawkbitDdi::getDeploymentBase() {
     Serial.println();
     _client.stop();
     this->_currentActionId = atoi(jsonBuffer["id"].as<char *>());
+    /* Only look for the deployment update mode as we don't want to split download and update on ESP32 */
     this->_currentDeploymentMode = parseDeploymentMode(jsonBuffer["deployment"]["update"].as<char *>());
     if (this->_currentExecutionStatus == HB_EX_CLOSED) {
       if (this->_currentDeploymentMode == HB_DEPLOYMENT_FORCE) {
@@ -282,6 +283,15 @@ void HawkbitDdi::getDeploymentBase() {
         this->_currentExecutionResult = HB_RES_NONE;
         this->_jobSchedule = millis() + 600000UL;
         this->_jobFeedbackChanged = true;
+      }
+    }
+    /* We only support one chunk with one artifact for now. */
+    JsonArray chunks = jsonBuffer["deployment"]["chunks"].as<JsonArray>();
+    if (!chunks.isNull() && chunks.size() >= 1) {
+      JsonArray artifacts = chunks[0]["artifacts"].as<JsonArray>();
+      if (!artifacts.isNull() && artifacts.size() >= 1) {
+        this->_updateSize = artifacts[0]["size"].as<unsigned long>();
+        strncpy(this->_getSoftwareModuleHref, artifacts[0]["_links"]["download"].as<char *>(), sizeof(this->_getSoftwareModuleHref));
       }
     }
     Serial.printf("Current Action ID: %d", this->_currentActionId);

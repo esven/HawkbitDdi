@@ -117,6 +117,7 @@ class HawkbitDdi
     unsigned long _jobSchedule;
     bool _jobFeedbackChanged = false;
     int _currentActionId = -1;
+    unsigned long _updateSize;
     WiFiClientSecure _client;
     uint16_t _serverPort;
     String _serverName;

@@ -92,7 +92,7 @@ void setup() {
   configDataDocument.clear();
   configDataDocument["chipid"] = chipidstring;
   configDataDocument["filename"] = __FILENAME__;
-  configDataDocument["program"] = VERSION;
+  configDataDocument["program"] = PROGRAMNAME;
   configDataDocument["version"] = VERSION;
   serializeJson(configDataDocument, configData);
   hawkbit.setConfigData(configData);

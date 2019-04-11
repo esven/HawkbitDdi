@@ -117,7 +117,7 @@ int HawkbitDdi::work() {
       Serial.println("Need to put config data");
       this->putConfigData();
     }
-    if (strnlen(this->_getDeploymentBaseHref, sizeof(this->_getDeploymentBaseHref)) > 0) {
+    if (strnlen(this->_getDeploymentBaseHref, sizeof(this->_getDeploymentBaseHref)) > 0 && this->_currentActionId <= 0) {
       Serial.println("Need to get Deployment Base");
       this->getDeploymentBase();
     }
@@ -128,14 +128,15 @@ int HawkbitDdi::work() {
   if (this->_currentActionId > 0) {
     switch (this->_currentExecutionStatus) {
       case HB_EX_PROCEEDING:
-        this->_currentExecutionStatus = HB_EX_CLOSED;
-        this->_currentExecutionResult = HB_RES_SUCCESS;
-        this->_jobFeedbackChanged = true;
+        this->getAndInstallUpdateImage();
+        //this->_currentExecutionStatus = HB_EX_CLOSED;
+        //this->_currentExecutionResult = HB_RES_SUCCESS;
+        //this->_jobFeedbackChanged = true;
         break;
       case HB_EX_SCHEDULED:
         if (millis() > this->_jobSchedule) {
-          this->_currentExecutionStatus = HB_EX_CLOSED;
-          this->_currentExecutionResult = HB_RES_SUCCESS;
+          this->_currentExecutionStatus = HB_EX_PROCEEDING;
+          this->_currentExecutionResult = HB_RES_NONE;
           this->_jobFeedbackChanged = true;
         }
         break;
@@ -153,6 +154,7 @@ int HawkbitDdi::work() {
     }
     if (this->_currentExecutionStatus == HB_EX_CLOSED) {
       this->_currentActionId = 0;
+      ESP.restart();
     }
   }
   return retStatus;
@@ -193,30 +195,39 @@ char * HawkbitDdi::createHeaders(const char *serverName, const char *acceptType)
 static void splitHref(char *href_string) {
   Serial.println("Split Href");
   uint8_t partNo = 0;
+  char *endPtr;
+  size_t curLen;
   memset(&href_param, 0, sizeof(href_param));
   // Read each time pair
   char* component = strtok(href_string, "/");
   while (component != NULL)
   {
+    Serial.println(component);
     switch (partNo) {
       case 0:
       default:
         // Find the next command in input string
-        component = strtok(NULL, ":");
+        component = strtok(NULL, ":/");
         break;
       case 1:
-        strncpy(href_param.href_server, &component[1], sizeof(href_param.href_server));
+        strncpy(href_param.href_server, component, sizeof(href_param.href_server));
         // Find the next command in input string
         component = strtok(NULL, "/");
         break;
       case 2:
-        href_param.href_port = atoi(component);
+        href_param.href_port = strtol(component, &endPtr, 10);
+        if (endPtr != NULL && *endPtr != '\0') {
+          href_param.href_port = 443;
+          href_param.href_url[0] = '/';
+          strncpy(&href_param.href_url[1], component, sizeof(href_param.href_url) - 1);
+        }
         // Find the next command in input string
         component = strtok(NULL, "");
         break;
       case 3:
-        href_param.href_url[0] = '/';
-        strncpy(&href_param.href_url[1], component, sizeof(href_param.href_url) - 1);
+        curLen = strnlen(href_param.href_url, sizeof(href_param.href_url));
+        href_param.href_url[curLen] = '/';
+        strncpy(&href_param.href_url[curLen + 1], component, sizeof(href_param.href_url)- curLen - 1);
         // Find the next command in input string
         component = strtok(NULL, "");
         break;
@@ -230,8 +241,8 @@ HB_DEPLOYMENT_MODE HawkbitDdi::parseDeploymentMode(const char *deploymentmode) {
   if (deploymentmode == NULL) {
     return returnMode;
   }
-  for (int i = 0; i < HB_DEPLOYMENT_MAX; i++) {
-    if (strncmp(HawkbitDdi::deploymentModeString[i], deploymentmode, sizeof(HawkbitDdi::deploymentModeString[i]) + 1) == 0) {
+  for (int i = 1; i < HB_DEPLOYMENT_MAX; i++) {
+    if (strncmp(HawkbitDdi::deploymentModeString[i], deploymentmode, 8) == 0) {
       returnMode = (HB_DEPLOYMENT_MODE)i;
       break;
     }
@@ -267,13 +278,22 @@ void HawkbitDdi::getAndInstallUpdateImage() {
     if (Update.end()) {
       Serial.println("OTA done!");
       if (Update.isFinished()) {
+        this->_currentExecutionStatus = HB_EX_CLOSED;
+        this->_currentExecutionResult = HB_RES_SUCCESS;
+        this->_jobFeedbackChanged = true;
         Serial.println("Update successfully completed. Rebooting.");
       }
       else {
+        this->_currentExecutionStatus = HB_EX_CLOSED;
+        this->_currentExecutionResult = HB_RES_FAILURE;
+        this->_jobFeedbackChanged = true;
         Serial.println("Update not finished? Something went wrong!");
       }
     }
     else {
+      this->_currentExecutionStatus = HB_EX_CLOSED;
+      this->_currentExecutionResult = HB_RES_FAILURE;
+      this->_jobFeedbackChanged = true;
       Serial.println("Error Occurred. Error #: " + String(Update.getError()));
     }
     _client.stop();
@@ -316,34 +336,41 @@ void HawkbitDdi::getDeploymentBase() {
     serializeJsonPretty(jsonBuffer, Serial);
     Serial.println();
     _client.stop();
+    Serial.println("Storing Values");
     this->_currentActionId = atoi(jsonBuffer["id"].as<char *>());
+    Serial.printf("Current Action ID: %d\r\n", this->_currentActionId);
     /* Only look for the deployment update mode as we don't want to split download and update on ESP32 */
-    this->_currentDeploymentMode = parseDeploymentMode(jsonBuffer["deployment"]["update"].as<char *>());
+    this->_currentDeploymentMode = HawkbitDdi::parseDeploymentMode(jsonBuffer["deployment"]["update"].as<char *>());
+    Serial.printf("Deployment Mode: %s", HawkbitDdi::deploymentModeString[this->_currentDeploymentMode]);
     if (this->_currentExecutionStatus == HB_EX_CLOSED) {
       if (this->_currentDeploymentMode == HB_DEPLOYMENT_FORCE) {
         /* Immediately start downloading and updating */
         this->_currentExecutionStatus = HB_EX_PROCEEDING;
         this->_currentExecutionResult = HB_RES_NONE;
         this->_jobFeedbackChanged = true;
+        this->_jobSchedule = millis();
       } else if (this->_currentDeploymentMode == HB_DEPLOYMENT_ATTEMPT) {
         /* Schedule downloading and updating in 10 minute */
         this->_currentExecutionStatus = HB_EX_SCHEDULED;
         this->_currentExecutionResult = HB_RES_NONE;
-        this->_jobSchedule = millis() + 600000UL;
+        this->_jobSchedule = millis() + 15000UL;
         this->_jobFeedbackChanged = true;
       }
     }
+    Serial.println("Storing Chunks");
     /* We only support one chunk with one artifact for now. */
     JsonArray chunks = jsonBuffer["deployment"]["chunks"].as<JsonArray>();
     if (!chunks.isNull() && chunks.size() >= 1) {
+      Serial.println("Storing Artifacts");
       JsonArray artifacts = chunks[0]["artifacts"].as<JsonArray>();
       if (!artifacts.isNull() && artifacts.size() >= 1) {
         this->_updateSize = artifacts[0]["size"].as<unsigned long>();
-        strncpy(this->_getSoftwareModuleHref, artifacts[0]["_links"]["download"].as<char *>(), sizeof(this->_getSoftwareModuleHref));
+        strncpy(this->_getSoftwareModuleHref, artifacts[0]["_links"]["download"]["href"].as<char *>(), sizeof(this->_getSoftwareModuleHref));
+        Serial.println(this->_getSoftwareModuleHref);
       }
     }
-    Serial.printf("Current Action ID: %d", this->_currentActionId);
   }
+  Serial.println("Deployment Base finished");
 }
 
 void HawkbitDdi::pollController() {
@@ -384,8 +411,8 @@ void HawkbitDdi::pollController() {
     //  Serial.println(timeString);
     this->_pollInterval = HawkbitDdi::convertTime(timeString);
     Serial.printf("Poll Interval: %d\r\n", this->_pollInterval);
-    this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
-    //this->_nextPoll = millis() + 10000UL;
+    //this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
+    this->_nextPoll = millis() + 10000UL;
     Serial.printf("Next Poll: %d\r\n", this->_nextPoll);
     Serial.println(jsonBuffer["_links"].as<char*>());
     if (jsonBuffer["_links"].isNull()) {

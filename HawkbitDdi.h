@@ -136,7 +136,7 @@ class HawkbitDdi
     void getDeploymentBase();
     void postDeploymentBaseFeedback();
     void getAndInstallUpdateImage();
-    HB_DEPLOYMENT_MODE parseDeploymentMode(const char *deploymentmode);
+    static HB_DEPLOYMENT_MODE parseDeploymentMode(const char *deploymentmode);
     char * createHeaders();
     char * createHeaders(const char *serverName);
     char * createHeaders(const char *serverName, const char *acceptType);

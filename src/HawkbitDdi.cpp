@@ -417,8 +417,8 @@ void HawkbitDdi::pollController() {
     //  Serial.println(timeString);
     this->_pollInterval = HawkbitDdi::convertTime(timeString);
     Serial.printf("Poll Interval: %d\r\n", this->_pollInterval);
-    //this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
-    this->_nextPoll = millis() + 10000UL;
+    this->_nextPoll = millis() + (this->_pollInterval > 0 ? this->_pollInterval : 300000UL);
+    //this->_nextPoll = millis() + 10000UL;
     Serial.printf("Next Poll: %d\r\n", this->_nextPoll);
     Serial.println(jsonBuffer["_links"].as<char*>());
     if (jsonBuffer["_links"].isNull()) {

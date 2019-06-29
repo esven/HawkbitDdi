@@ -87,6 +87,14 @@ class HawkbitDdi
       strncpy(this->_configData, jsonString, sizeof(this->_configData));
     }
 
+    bool isIdle() {
+        return this->_currentExecutionStatus <= 0;
+    }
+
+    unsigned long getNextPoll() {
+        return this->_nextPoll;
+    }
+
   protected:
 
   private:

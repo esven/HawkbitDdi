@@ -77,7 +77,7 @@ const char *HawkbitDdi::deploymentModeString[HB_DEPLOYMENT_MAX] = {
   [HB_DEPLOYMENT_NONE] = NULL, // Unknown deployment mode
   [HB_DEPLOYMENT_SKIP] = "skip", // do not update, yet
   [HB_DEPLOYMENT_ATTEMPT] = "attempt", // server asks to update
-  [HB_DEPLOYMENT_FORCE] = "force" // server requests immediate update
+  [HB_DEPLOYMENT_FORCE] = "forced" // server requests immediate update
 };
 
 /* Static definitions for GET requests to use in printf functions */

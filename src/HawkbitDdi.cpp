@@ -88,6 +88,10 @@ const char *HawkbitDdi::_postDeploymentBaseFeedback = "POST /%s/controller/v1/%s
 
 static void splitHref(char *href_string);
 
+HawkbitDdi::HawkbitDdi() {
+  
+}
+
 HawkbitDdi::HawkbitDdi(String serverName, uint16_t serverPort, String tenantId, String controllerId, String securityToken, HB_SECURITY_TYPE securityType) {
   this->_serverName = serverName;
   this->_serverPort = serverPort;

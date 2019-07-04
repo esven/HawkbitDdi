@@ -75,6 +75,7 @@ class HawkbitDdi
 {
   public:
     /* De-/Constructors */
+    HawkbitDdi(void);
     HawkbitDdi(String serverName, uint16_t serverPort, String tenantId, String controllerId, String securityToken, HB_SECURITY_TYPE securityType = HB_SEC_NONE);
     ~HawkbitDdi(void);
 

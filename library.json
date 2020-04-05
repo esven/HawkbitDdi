@@ -1,0 +1,10 @@
+{
+	"name" : "HawkbitDdi",
+	"version" : "0.0.1",
+	"description" : "A Library to mange OTA Updates using Eclipse Hawkbit or Bosch IoT Rollouts",
+	"keywords" : "ota,ddi,hawkbit,bosch",
+	"repository" : {
+		"type" : "git",
+		"url" : "https://github.com/esven/HawkbitDdi"
+	}
+}

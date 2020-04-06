@@ -6,5 +6,7 @@
 	"repository" : {
 		"type" : "git",
 		"url" : "https://github.com/esven/HawkbitDdi"
-	}
+	},
+  	"frameworks": "arduino",
+  	"platforms": "*"
 }
